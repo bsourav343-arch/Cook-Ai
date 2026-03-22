@@ -1,0 +1,5 @@
+{
+  "name": "Cook AI",
+  "description": "AI-powered recipe generator from food ingredient images. Identify ingredients and get step-by-step recipes.",
+  "requestFramePermissions": ["camera"]
+}

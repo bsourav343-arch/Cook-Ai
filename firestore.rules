@@ -1,0 +1,136 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: /users/{userId}
+    // Document ID: userId (Firebase Auth UID)
+    // Fields:
+    //   - uid: string (required) - Firebase Auth UID
+    //   - email: string (required) - User email
+    //   - displayName: string (optional) - User display name
+    //   - subscriptionStatus: string (required) - ["free", "monthly", "yearly"]
+    //   - subscriptionExpiry: string (optional) - ISO 8601 date-time
+    //   - createdAt: string (optional) - ISO 8601 date-time
+    //
+    // Collection: /users/{userId}/recipes/{recipeId}
+    // Document ID: recipeId (Auto-generated)
+    // Fields:
+    //   - id: string (required) - Unique recipe ID
+    //   - userId: string (required) - Owner UID
+    //   - dishName: string (required) - Name of the dish
+    //   - ingredients: list (required) - List of ingredients
+    //   - instructions: list (required) - Step-by-step instructions
+    //   - cookingTime: string (optional) - Estimated cooking time
+    //   - detectedIngredients: list (optional) - Ingredients detected from image
+    //   - imageUrl: string (optional) - URL of the uploaded image
+    //   - createdAt: string (required) - ISO 8601 date-time
+    //
+    // Collection: /users/{userId}/history/{historyId}
+    // Document ID: historyId (Auto-generated)
+    // Fields:
+    //   - id: string (required) - Unique history ID
+    //   - userId: string (required) - User UID
+    //   - detectedIngredients: list (required) - Ingredients detected from image
+    //   - imageUrl: string (optional) - Base64 or URL of the image
+    //   - createdAt: string (required) - ISO 8601 date-time
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "bsourav343@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidEmail(email) {
+      return email is string && email.matches("^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$");
+    }
+
+    function isValidDateString(dateStr) {
+      return dateStr is string && dateStr.matches("^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}.*Z?$");
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return hasRequiredFields(['uid', 'email', 'subscriptionStatus']) &&
+             data.uid is string && data.uid.size() > 0 &&
+             data.email is string && isValidEmail(data.email) &&
+             data.subscriptionStatus in ['free', 'monthly', 'yearly'] &&
+             (!('displayName' in data) || (data.displayName is string && data.displayName.size() < 100)) &&
+             (!('subscriptionExpiry' in data) || isValidDateString(data.subscriptionExpiry)) &&
+             (!('createdAt' in data) || isValidDateString(data.createdAt));
+    }
+
+    function isValidRecipe(data) {
+      return hasRequiredFields(['userId', 'dishName', 'ingredients', 'instructions', 'createdAt']) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.dishName is string && data.dishName.size() > 0 && data.dishName.size() < 200 &&
+             data.ingredients is list && data.ingredients.size() < 100 &&
+             data.instructions is list && data.instructions.size() < 100 &&
+             isValidDateString(data.createdAt) &&
+             (!('cookingTime' in data) || (data.cookingTime is string && data.cookingTime.size() < 50)) &&
+             (!('detectedIngredients' in data) || (data.detectedIngredients is list && data.detectedIngredients.size() < 50)) &&
+             (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() < 1000));
+    }
+
+    function isValidHistoryItem(data) {
+      return hasRequiredFields(['userId', 'detectedIngredients', 'createdAt']) &&
+             data.userId is string && data.userId == request.auth.uid &&
+             data.detectedIngredients is list && data.detectedIngredients.size() < 50 &&
+             isValidDateString(data.createdAt) &&
+             (!('imageUrl' in data) || (data.imageUrl is string && data.imageUrl.size() < 1000000)); // Base64 can be large
+    }
+
+    // ===============================================================
+    // Rules
+    // ===============================================================
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isAdmin();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.subscriptionStatus == 'free' || isAdmin());
+      allow update: if isOwner(userId) && isValidUser(request.resource.data) && (request.resource.data.subscriptionStatus == resource.data.subscriptionStatus || isAdmin());
+      
+      match /recipes/{recipeId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidRecipe(request.resource.data);
+        allow update: if isOwner(userId) && isValidRecipe(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+
+      match /history/{historyId} {
+        allow read: if isOwner(userId) || isAdmin();
+        allow create: if isOwner(userId) && isValidHistoryItem(request.resource.data);
+        allow update: if isOwner(userId) && isValidHistoryItem(request.resource.data);
+        allow delete: if isOwner(userId) || isAdmin();
+      }
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
